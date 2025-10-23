@@ -1,0 +1,115 @@
+%%capture [--no-stderr]
+import sys
+sys.path.insert(1, 'scGenePT')
+
+from train import load_dataloader
+from utils.data_loading import *
+from models.scGenePT import *
+import matplotlib.pyplot as plt
+from gears.inference import evaluate, compute_metrics, deeper_analysis, non_dropout_analysis
+import scanpy as sc
+import pickle as pkl
+
+
+# Load dataset
+
+!aws s3 cp --no-sign-request s3://czi-scgenept-public/training_data/{dataset_name}_pert_data_adata.h5ad.gz scGenePT/tutorials/{dataset_name}_pert_data_adata.h5ad.gz
+!gzip -d scGenePT/tutorials/{dataset_name}_pert_data_adata.h5ad.gz
+
+pert_adata = sc.read_h5ad(f'scGenePT/tutorials/{dataset_name}_pert_data_adata.h5ad')
+
+from gears import PertData
+
+# Download the Pre-processed Norman dataset directly from GEARS
+pert_data = PertData('./data')
+pert_data = load_dataloader(dataset_name, batch_size, eval_batch_size, split = 'simulation')
+train_loader = pert_data.dataloader['train_loader']
+val_loader = pert_data.dataloader['val_loader']
+test_loader = pert_data.dataloader['test_loader']
+
+pert_adata = pert_data.adata
+pert_data_subgroup = pert_data.subgroup
+pert_adata
+
+pert_adata.X # 902105 cells, 5045 genes
+pert_adata.obs # perturbation conditions applied to the 902105 cells
+
+print(f'There are {len(pert_adata.var)} number of genes present in the dataset.')
+pert_adata.var.head() # the names of the 5045 genes
+
+
+def load_trained_scgenept_model(adata, model_type, models_dir, model_location, device, verbose = False):
+    embs_to_include = get_embs_to_include(model_type)
+    vocab_file = models_dir + 'pretrained/scgpt/vocab.json'
+    vocab, gene_ids, dataset_genes, gene2idx = match_genes_to_scgpt_vocab_from_adata(vocab_file, adata, SPECIAL_TOKENS)
+    ntokens = len(vocab)  # size of vocabulary
+    genept_embs, genept_emb_type, genept_emb_dim, found_genes_genept = initialize_genept_embeddings(embs_to_include, dataset_genes, vocab, model_type, models_dir)
+    go_embs_to_include, go_emb_type, go_emb_dim, found_genes_go = initialize_go_embeddings(embs_to_include, dataset_genes, vocab, model_type, models_dir)
+
+    # we disable flash attention for inference for simplicity
+    use_fast_transformer = False
+
+    model = scGenePT(
+        ntoken=ntokens,
+        d_model=EMBSIZE,
+        nhead=NHEAD,
+        d_hid=D_HID,
+        nlayers=NLAYERS,
+        nlayers_cls=N_LAYERS_CLS,
+        n_cls=N_CLS,
+        vocab=vocab,
+        n_perturbagens=2,
+        dropout=0.0,
+        pad_token=PAD_TOKEN,
+        pad_value=PAD_VALUE,
+        pert_pad_id=PERT_PAD_ID,
+        use_fast_transformer=use_fast_transformer,
+        embs_to_include = embs_to_include,
+        genept_embs = genept_embs,
+        genept_emb_type = genept_emb_type,
+        genept_emb_size = genept_emb_dim,
+        go_embs_to_include = go_embs_to_include,
+        go_emb_type = go_emb_type,
+        go_emb_size = go_emb_dim
+    )
+
+    pretrained_params = torch.load(model_location, weights_only=True, map_location = device)
+    if not use_fast_transformer:
+        pretrained_params = {
+            k.replace("Wqkv.", "in_proj_"): v for k, v in pretrained_params.items()
+        }
+
+    model.load_state_dict(pretrained_params)
+
+    if verbose:
+        print(model)
+    model.to(device)
+    return model, gene_ids
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f'Using device {device}')
+
+# Mapping from model name to the name of the model file model weights are saved
+model_name2model_variation = {'scgpt' : 'best_model_seed_42.pt',
+                    'scgenept_ncbi+uniprot_gpt' : 'best_model_gpt3.5_ada_rnd_seed_42.pt',
+                    'scgenept_go_c_gpt_concat' : 'best_model_gpt3.5_ada_rnd_seed_42_concat.pt'}
+# Names of the scGenePT models to load. Note that these have to match the keys in the model_name2model_variation dict
+models = ['scgpt', 'scgenept_go_c_gpt_concat', 'scgenept_ncbi+uniprot_gpt']
+trained_models = {}
+
+# Location of where the pretrained scGPT model and gene embeddings are located
+pretrained_scgpt_model_dir = 'scGenePT/models/'
+
+for model_name in models:
+    print(f"Now loading a {model_name} model ... ")
+    print('=' * 30)
+    model_filename = model_name2model_variation[model_name]
+    if model_name != 'scgpt':
+        model_prefix = ''.join(model_name.split('_gpt')[:-1])
+    else:
+        model_prefix = model_name
+    model_location =  f'scGenePT/models/finetuned/{model_prefix}/{dataset_name}/{model_filename}'
+    model, gene_ids =  load_trained_scgenept_model(pert_adata, model_name, pretrained_scgpt_model_dir, model_location, device)
+    print('Done!\n')
+    trained_models[model_name] = model
