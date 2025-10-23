@@ -1,0 +1,96 @@
+%%capture [--no-stderr]
+import sys
+sys.path.insert(1, 'scGenePT')
+
+from train import load_dataloader
+from utils.data_loading import *
+from models.scGenePT import *
+import matplotlib.pyplot as plt
+from gears.inference import evaluate, compute_metrics, deeper_analysis, non_dropout_analysis
+import scanpy as sc
+import pickle as pkl
+
+
+
+
+
+
+# Predicting on NumPy arrays holding control samples
+model_name = 'scgenept_go_c_gpt_concat'
+dataset_name = 'norman'
+pert_adata = sc.read_h5ad(f'scGenePT/tutorials/{dataset_name}_pert_data_adata.h5ad')
+
+model_filename = model_name2model_variation[model_name]
+model_location =  f'scGenePT/models/finetuned/scgenept_go_c/{dataset_name}/{model_filename}'
+model, gene_ids =  load_trained_scgenept_model(pert_adata, model_name, pretrained_scgpt_model_dir, model_location, device, verbose = False)
+
+gene_names = pert_adata.var['gene_name'].to_list()
+print(f'There are {len(gene_names)} genes, the first 10 are: {gene_names[:10]}')
+
+# this can be replaced with another gene
+pert = "FOSB+ctrl"
+
+# the order of the genes in ctrl_sample also has to match that of gene_names
+ctrl_sample = np.random.rand(5045)
+
+
+def get_pert_flags(ctrl_sample, gene_names, pert):
+    pert_flags = np.zeros(len(ctrl_sample))
+    if pert!= 'ctrl':
+        for x in pert.split('+'):
+            if x != 'ctrl':
+                pert_flags[gene_names.index(x)] = 1
+    pert_flags = torch.from_numpy(pert_flags).long().to(device).unsqueeze(0)
+    return pert_flags
+
+def pred_ctrl_sample(model, gene_ids, ctrl_sample, pert_flags, device):
+    ctrl_sample = torch.from_numpy(np.expand_dims(ctrl_sample, 0)).to(dtype = torch.float32).to(device)
+    gene_ids_tensor = torch.tensor(gene_ids).long().unsqueeze(0).to(device)
+    src_key_padding_mask = torch.zeros_like(gene_ids_tensor, dtype=torch.bool, device=device)
+    model = model.to(torch.float32)
+    with torch.cuda.amp.autocast(enabled=True):
+        with torch.no_grad():
+            output_dict = model(
+                gene_ids_tensor,
+                ctrl_sample,
+                pert_flags,
+                src_key_padding_mask=src_key_padding_mask,
+                CLS=False,
+                CCE=False,
+                MVC=False,
+                ECS=False,
+                do_sample=True,
+            )
+    prediction = output_dict["mlm_output"].float().detach().cpu().numpy()
+    return prediction
+
+preds = pred_ctrl_sample(model, gene_ids, ctrl_sample, pert_flags, device)
+preds
+
+
+
+
+#Predicting on AnnData files
+
+adata_ctrl = pert_adata[pert_adata.obs['condition'] == 'ctrl'][:100] # this can be any other AnnData file
+adata_ctrl
+adata_ctrl.var
+
+adata_ctrl.X # an entry (i, j) corresponds to the value of gene j in cell i; the 5045 genes must match to the list above
+gene_pert = 'CEBPB+ctrl'
+
+ctrl_size = None # Note that if ctrl_size = None, all ctrl samples are used; if ctrl_size != None, then ctrl_size samples will get randomly sampled.
+return_mean = False # If this is True, then the mean of the predictions will get returned
+preds = model.pred_perturb_from_ctrl(adata_ctrl, gene_pert, gene_names, device, gene_ids, pool_size = ctrl_size, return_mean = False).squeeze()
+preds
+
+# Assign the predictions to the anndata file
+adata_ctrl.layers[f'{model_name}_predictions'] = preds
+adata_ctrl
+
+# Mean prediction over ctrl_size control samples from adata_ctrl
+ctrl_size = 300
+preds_mean = model.pred_perturb_from_ctrl(adata_ctrl, gene_pert, gene_names, device, gene_ids, pool_size = ctrl_size, return_mean = True).squeeze()
+preds_mean
+
+pert_flags = get_pert_flags(ctrl_sample, gene_names, pert)
