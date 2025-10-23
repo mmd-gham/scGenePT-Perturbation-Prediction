@@ -1,0 +1,65 @@
+def plot_perturbation(
+    model: nn.Module, adata, query: str, model_type, color, marker, title, save_file: str = None, amp = True, pool_size: int = None
+):
+    import seaborn as sns
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    sns.set_theme(style="ticks", rc={"axes.facecolor": (0, 0, 0, 0)}, font_scale=1.5)
+    adata_ctrl = adata[adata.obs['condition'] == 'ctrl']
+    gene_names = adata.var['gene_name'].to_list()
+
+    gene2idx = {gene: idx for idx, gene in enumerate(adata.var['gene_name'])}
+    cond2name = dict(adata.obs[["condition", "condition_name"]].values)
+    gene_raw2id = dict(zip(adata.var.index.values, adata.var.gene_name.values))
+
+    de_idx = [
+        gene2idx[gene_raw2id[i]]
+        for i in adata.uns["top_non_zero_de_20"][cond2name[query]]
+    ]
+    genes = [
+        gene_raw2id[i] for i in adata.uns["top_non_zero_de_20"][cond2name[query]]
+    ]
+    truth = adata[adata.obs.condition == query].X.toarray()[:, de_idx]
+    print(device)
+    pred = model.pred_perturb_from_ctrl(adata_ctrl, query, gene_names, device, gene_ids, amp, pool_size).squeeze()[de_idx]
+    ctrl_means = adata[adata.obs["condition"] == "ctrl"].to_df().mean()[de_idx].values
+
+    pred = pred - ctrl_means
+    truth = truth - ctrl_means
+
+    plt.figure(figsize=[16.5, 4.5])
+    plt.title(title + '\n' + query)
+    plt.boxplot(truth, showfliers=False, medianprops=dict(linewidth=0))
+
+    for i in range(pred.shape[0]):
+        _ = plt.scatter(i + 1, pred[i], color=color, marker=marker)
+
+    plt.axhline(0, linestyle="dashed", color="green")
+
+    ax = plt.gca()
+    ax.xaxis.set_ticklabels(genes, rotation=90)
+
+    plt.ylabel("Change in Gene Expression over Control", labelpad=10)
+    plt.tick_params(axis="x", which="major", pad=5)
+    plt.tick_params(axis="y", which="major", pad=5)
+    sns.despine()
+
+pert_data_subgroup = pkl.load(open(f'scGenePT/tutorials/{dataset_name}_pert_data_subgroups.pkl', 'rb'))
+pert_data_subgroup.keys()
+
+unseen_single = pert_data_subgroup['test_subgroup']['unseen_single']
+combo_seen0 = pert_data_subgroup['test_subgroup']['combo_seen0']
+combo_seen1 = pert_data_subgroup['test_subgroup']['combo_seen1']
+combo_seen2 = pert_data_subgroup['test_subgroup']['combo_seen2']
+
+print(f'unseen_single: {len(unseen_single)}, combo_seen0: {len(combo_seen0)}, combo_seen1: {len(combo_seen1)}, combo_seen2: {len(combo_seen2)}')
+
+pert = 'POU3F2+ctrl'
+colors = ['blue', 'fuchsia']
+marker_types = [ 'o','s']
+models_to_predict = ['scgpt', 'scgenept_go_c_gpt_concat']
+
+for model, color, marker_type, title  in zip(models_to_predict, colors, marker_types, ['scGPT', 'scGenePT_GO-C']):
+    plot_perturbation(trained_models[model], pert_adata, pert, model, color, marker_type, title, amp = True, pool_size=300)
+
