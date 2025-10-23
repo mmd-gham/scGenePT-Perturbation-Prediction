@@ -1,0 +1,42 @@
+%%capture [--no-stderr]
+!pip -q install torch==2.1.2 torch_geometric==2.5.3 torchdata==0.7.1 torchmetrics==1.4.0.post0 packaging==24.1 numpy==1.26.4 scgpt awscli
+!git clone https://github.com/czi-ai/scGenePT.git
+
+from pathlib import Path
+def initialize_folder_structure(models_dir, models, dataset):
+  models_finetuned = models_dir / "finetuned"
+  model_embeddings = models_dir / "gene_embeddings"
+  model_embeddings_annotations = models_dir / "gene_embeddings" / "gene_annotations"
+  models_finetuned.mkdir(parents=True, exist_ok=True)
+  for model in models:
+    model_dir = models_finetuned / model / dataset
+    model_dir.mkdir(parents=True, exist_ok=True)
+  model_embeddings.mkdir(parents=True, exist_ok=True)
+  model_embeddings_annotations.mkdir(parents=True, exist_ok=True)
+
+# This creates the required folder structure needed for the data
+initialize_folder_structure(Path('scGenePT/models'), ['scgpt', 'scgenept_go_c', 'scgenept_ncbi+uniprot'], "norman")
+
+dataset_name = 'norman' # this can also be replaced with adamson, but the model files need to be updated accordingly throughout the notebook
+
+# Download the Gene Embeddings
+!aws s3 cp --no-sign-request s3://czi-scgenept-public/models/gene_embeddings/GO_C_gene_embeddings-gpt3.5-ada-concat.pickle scGenePT/models/gene_embeddings/
+!aws s3 cp --no-sign-request s3://czi-scgenept-public/models/gene_embeddings/NCBI+UniProt_embeddings-gpt3.5-ada.pkl  scGenePT/models/gene_embeddings/
+
+# Download the trained scGenePT models
+!aws s3 sync --no-sign-request s3://czi-scgenept-public/models/finetuned/scgpt/{dataset_name}/ scGenePT/models/finetuned/scgpt/{dataset_name}/
+!aws s3 sync --no-sign-request s3://czi-scgenept-public/models/finetuned/scgenept_go_c/norman/ scGenePT/models/finetuned/scgenept_go_c/{dataset_name}/
+!aws s3 sync --no-sign-request s3://czi-scgenept-public/models/finetuned/scgenept_ncbi+uniprot/{dataset_name}/ scGenePT/models/finetuned/scgenept_ncbi+uniprot/{dataset_name}/
+
+
+%%capture [--no-stderr]
+import sys
+sys.path.insert(1, 'scGenePT')
+
+from train import load_dataloader
+from utils.data_loading import *
+from models.scGenePT import *
+import matplotlib.pyplot as plt
+from gears.inference import evaluate, compute_metrics, deeper_analysis, non_dropout_analysis
+import scanpy as sc
+import pickle as pkl
