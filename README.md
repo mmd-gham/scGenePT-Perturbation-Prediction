@@ -84,3 +84,7 @@ Running inference on:
 NumPy arrays (control samples)
 
 AnnData files (custom inputs)
+
+References
+1.Norman, Thomas M., et al. "Exploring genetic interaction manifolds constructed from rich single-cell phenotypes." Science 365.6455 (2019): 786-793.
+2. Cui, Haotian, et al. "scGPT: toward building a foundation model for single-cell multi-omics using generative AI." Nature Methods (2024): 1-11.
